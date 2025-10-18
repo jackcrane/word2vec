@@ -1,3 +1,6 @@
 node_modules
 wikisent2.txt
 wikipedia-sentences.zip
+jungle_book.txt
+.gitignore
+tiny_corpus.txt
