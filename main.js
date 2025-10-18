@@ -64,27 +64,42 @@ const LEARNING_RATE = 0.001;
 const EPOCHS = 100;
 const WINDOW_SIZE = 5;
 
-// Start training
-const bar = new ProgressBar("Training [:bar] :percent :etas", {
+// Outer epoch progress
+const outerBar = new ProgressBar("Epochs [:bar] :percent :etas", {
   complete: "=",
   incomplete: " ",
   width: 40,
   total: EPOCHS,
 });
+
 t.start();
 
 for (let epoch = 0; epoch < EPOCHS; epoch++) {
+  // Count total lines for inner progress bar
+  const totalLines = fs.readFileSync(SOURCE, "utf8").split("\n").length;
+  const innerBar = new ProgressBar(
+    `  Epoch ${epoch + 1} [:bar] :percent :etas`,
+    {
+      complete: "=",
+      incomplete: " ",
+      width: 40,
+      total: totalLines,
+    }
+  );
+
   const rl = readline.createInterface({
     input: fs.createReadStream(SOURCE, { encoding: "utf8" }),
     crlfDelay: Infinity,
   });
 
   for await (const line of rl) {
-    if (!line) continue;
+    if (!line) {
+      innerBar.tick();
+      continue;
+    }
 
     const sanitized = sanitizeWords(line.split(" "));
     for (let w = 0; w < sanitized.length; w++) {
-      // bounds check for context window
       const w0 = sanitized[w];
       const l1 = sanitized[w - 1];
       const l2 = sanitized[w - 2];
@@ -97,7 +112,6 @@ for (let epoch = 0; epoch < EPOCHS; epoch++) {
       const vr1 = getVecArray(r1);
       const vr2 = getVecArray(r2);
 
-      // skip positions where any vector is missing
       if (!v0 || !vl1 || !vl2 || !vr1 || !vr2) continue;
 
       const wordVector = new Vector(v0);
@@ -111,13 +125,11 @@ for (let epoch = 0; epoch < EPOCHS; epoch++) {
       const deltaR1 = wordVector.difference(rneighbor1).multiply(LEARNING_RATE);
       const deltaR2 = wordVector.difference(rneighbor2).multiply(LEARNING_RATE);
 
-      // Update neighbors toward center
       dict.set(l1, lneighbor1.add(deltaL1).normalize().values);
       dict.set(l2, lneighbor2.add(deltaL2).normalize().values);
       dict.set(r1, rneighbor1.add(deltaR1).normalize().values);
       dict.set(r2, rneighbor2.add(deltaR2).normalize().values);
 
-      // Update center toward each neighbor — opposite direction
       const newCenter = wordVector
         .subtract(deltaL1)
         .subtract(deltaL2)
@@ -126,11 +138,12 @@ for (let epoch = 0; epoch < EPOCHS; epoch++) {
         .normalize();
       dict.set(w0, newCenter.values);
     }
+
+    innerBar.tick();
   }
 
-  bar.tick();
-  // dict.flush(`out/${epoch + 1}.dat`);
+  outerBar.tick();
 }
-t.log("Training Complete");
 
+t.log("Training Complete");
 await dict.flush("model.dat");
