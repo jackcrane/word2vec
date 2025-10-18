@@ -1,5 +1,6 @@
 // distance.js
 import { Dict } from "./dictify.js";
+import ProgressBar from "progress";
 import {
   differenceVector,
   l2,
@@ -22,6 +23,7 @@ let MIN_SIM = Number(process.env.MIN_SIM ?? 0.8);
 let MIN_GAP = Number(process.env.MIN_GAP ?? 0.25);
 const EXCLUDE_STOPWORDS = process.env.EXCLUDE_STOPWORDS !== "0"; // default on
 const NO_CENTER = process.env.NO_CENTER === "1"; // set to 1 to disable mean-centering
+const SHOW_PROGRESS = process.env.NO_PROGRESS !== "1"; // default show
 
 const dict = new Dict();
 dict.load("model.dat");
@@ -48,20 +50,51 @@ for (let i = 0; i < n; i++) {
   proj[i] = s;
 }
 
+const makeBar = (label, total) =>
+  SHOW_PROGRESS
+    ? new ProgressBar(`${label} [:bar] :current/:total :percent :etas`, {
+        total,
+        width: 24,
+        clear: true,
+      })
+    : null;
+
+const logMatchedWords = (stage, pairs) => {
+  const uniq = new Set();
+  for (const p of pairs) {
+    uniq.add(p.a);
+    uniq.add(p.b);
+  }
+  const list = Array.from(uniq).sort();
+  console.error(
+    `\n[${stage}] matched words (${list.length})${
+      list.length ? `:\n- ${list.join("\n- ")}` : " — none"
+    }`
+  );
+};
+
 // Attempt with strict gates; if empty, progressively relax.
-const attempt = (percentile, minSim, minGap) => {
+const attempt = (percentile, minSim, minGap, label = "search") => {
   const { lowsIdx, highsIdx, lowThresh, highThresh } = percentileCut(
     proj,
     percentile
   );
 
+  const totalPairs = lowsIdx.length * highsIdx.length;
+  const bar = makeBar(`${label} (pairs)`, totalPairs);
+
   const out = [];
   for (let ii = 0; ii < lowsIdx.length; ii++) {
     const i = lowsIdx[ii];
     const ki = keys[i];
-    if (stop.has(ki)) continue;
+    if (stop.has(ki)) {
+      if (bar) bar.tick(highsIdx.length);
+      continue;
+    }
 
     for (let jj = 0; jj < highsIdx.length; jj++) {
+      if (bar) bar.tick(1);
+
       const j = highsIdx[jj];
       if (i === j) continue;
       const kj = keys[j];
@@ -95,15 +128,21 @@ const attempt = (percentile, minSim, minGap) => {
 };
 
 // Progressive relaxation loop
-let result = attempt(PERCENTILE, MIN_SIM, MIN_GAP);
+let result = attempt(PERCENTILE, MIN_SIM, MIN_GAP, "search@initial");
 let rounds = 0;
 while (result.pairs.length === 0 && rounds < 8) {
-  // widen candidate bands, lower thresholds gently
+  const nextRound = rounds + 1;
   PERCENTILE = Math.min(0.5, PERCENTILE * 1.8 + 0.01);
   MIN_SIM = Math.max(0.4, MIN_SIM - 0.05);
   MIN_GAP = Math.max(0.0, MIN_GAP * 0.8 - 0.02);
-  result = attempt(PERCENTILE, MIN_SIM, MIN_GAP);
-  rounds++;
+
+  result = attempt(PERCENTILE, MIN_SIM, MIN_GAP, `search@relax${nextRound}`);
+
+  // log the words matched in THIS relaxation attempt (even if empty)
+  logMatchedWords(`relax${nextRound}`, result.pairs);
+
+  rounds = nextRound;
+  if (result.pairs.length > 0) break;
 }
 
 // Fallback: if still empty, return best MxM by projection with no filters
@@ -112,11 +151,18 @@ if (result.pairs.length === 0) {
     proj,
     Math.min(0.5, Math.max(0.02, PERCENTILE))
   );
+  const totalPairs = lowsIdx.length * highsIdx.length;
+  const bar = makeBar("fallback (pairs)", totalPairs);
+
   const brute = [];
   for (const i of lowsIdx) {
     const ki = keys[i];
-    if (stop.has(ki)) continue;
+    if (stop.has(ki)) {
+      if (bar) bar.tick(highsIdx.length);
+      continue;
+    }
     for (const j of highsIdx) {
+      if (bar) bar.tick(1);
       if (i === j) continue;
       const kj = keys[j];
       if (stop.has(kj)) continue;

@@ -4,7 +4,7 @@ import ProgressBar from "progress";
 import { Dict } from "./dictify.js";
 import { Timer } from "./timer.js";
 
-const SOURCE = process.env.SOURCE ?? "test.txt";
+const SOURCE = process.env.SOURCE ?? "miniwiki.txt";
 const OUTPUT = process.env.OUTPUT ?? "model.dat";
 const EMBED_DIM = Number(process.env.EMBED_DIM ?? 100);
 const WINDOW_SIZE = Number(process.env.WINDOW_SIZE ?? 5);
@@ -12,10 +12,9 @@ const NEGATIVE_SAMPLES = Number(process.env.NEGATIVE_SAMPLES ?? 5);
 const MIN_COUNT = Number(process.env.MIN_COUNT ?? 1);
 const EPOCHS = Number(process.env.EPOCHS ?? 10);
 const INITIAL_LR = Number(process.env.LEARNING_RATE ?? 0.025);
-const MIN_LR =
-  Number.isFinite(Number(process.env.MIN_LEARNING_RATE))
-    ? Number(process.env.MIN_LEARNING_RATE)
-    : INITIAL_LR * 0.001;
+const MIN_LR = Number.isFinite(Number(process.env.MIN_LEARNING_RATE))
+  ? Number(process.env.MIN_LEARNING_RATE)
+  : INITIAL_LR * 0.001;
 const SUBSAMPLE_THRESHOLD = Number(process.env.SUBSAMPLE ?? 0);
 
 if (EMBED_DIM <= 0 || !Number.isFinite(EMBED_DIM)) {
@@ -195,10 +194,7 @@ const main = async () => {
       for (const token of tokens) {
         const idx = wordToIndex.get(token);
         if (idx === undefined) continue;
-        if (
-          SUBSAMPLE_THRESHOLD > 0 &&
-          Math.random() < discardProb[idx]
-        ) {
+        if (SUBSAMPLE_THRESHOLD > 0 && Math.random() < discardProb[idx]) {
           continue;
         }
         indices.push(idx);
@@ -232,7 +228,7 @@ const main = async () => {
       }
     });
 
-    timer.log(`Epoch ${epoch + 1} complete`);
+    // timer.log(`Epoch ${epoch + 1} complete`);
   }
 
   const dict = new Dict();
