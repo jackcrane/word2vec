@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "train": "node main.js",
+    "train": "node train.js",
     "query": "node query.js",
     "distance": "node distance.js"
   },
