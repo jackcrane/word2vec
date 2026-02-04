@@ -6,7 +6,8 @@
     "train": "node train.js",
     "query": "node query.js",
     "distance": "node distance.js",
-    "prune_wiki": "node prune-wiki.js"
+    "prune_wiki": "node prune-wiki.js",
+    "next": "node next-word.js"
   },
   "keywords": [],
   "author": "",

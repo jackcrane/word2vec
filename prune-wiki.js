@@ -52,4 +52,4 @@ export const sampleLines = async (inputFile, outputFile, count = 10000) => {
 };
 
 // Example usage:
-await sampleLines("wikisent2.txt", "miniwiki.txt", 10000);
+await sampleLines("wikisent2.txt", "miniwiki.txt", 100000);

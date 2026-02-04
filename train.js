@@ -1,10 +1,12 @@
 import fs from "fs";
+import path from "path";
 import readline from "readline";
 import ProgressBar from "progress";
 import { Dict } from "./dictify.js";
 import { Timer } from "./timer.js";
 
-const SOURCE = process.env.SOURCE ?? "miniwiki.txt";
+const DEFAULT_SOURCE = fs.existsSync("data") ? "data" : "miniwiki.txt";
+const SOURCE = process.env.SOURCE ?? DEFAULT_SOURCE;
 const OUTPUT = process.env.OUTPUT ?? "model.dat";
 const EMBED_DIM = Number(process.env.EMBED_DIM ?? 100);
 const WINDOW_SIZE = Number(process.env.WINDOW_SIZE ?? 5);
@@ -39,21 +41,156 @@ const sanitizeWords = (line) => {
   return clean;
 };
 
-const iterateCorpus = async (handler) => {
-  if (!fs.existsSync(SOURCE)) {
-    throw new Error(`Corpus file "${SOURCE}" not found`);
+const SUPPORTED_EXTENSIONS = new Set([".txt", ".csv"]);
+
+const gatherCorpusEntries = (target) => {
+  const resolved = path.resolve(target);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Corpus source "${target}" not found`);
   }
 
+  const entries = [];
+  const stack = [resolved];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    const stat = fs.statSync(current);
+    if (stat.isDirectory()) {
+      const contents = fs.readdirSync(current, { withFileTypes: true });
+      for (const dirent of contents) {
+        if (dirent.name.startsWith(".")) continue;
+        stack.push(path.join(current, dirent.name));
+      }
+    } else if (stat.isFile()) {
+      const ext = path.extname(current).toLowerCase();
+      if (SUPPORTED_EXTENSIONS.has(ext)) {
+        entries.push({ path: current, ext });
+      }
+    }
+  }
+
+  entries.sort((a, b) => a.path.localeCompare(b.path));
+  return entries;
+};
+
+const parseCsvLine = (line) => {
+  const fields = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === "," && !inQuotes) {
+      fields.push(current);
+      current = "";
+    } else {
+      current += char;
+    }
+  }
+
+  fields.push(current);
+  return fields;
+};
+
+const iterateTextFile = async (filePath, handler) => {
   const rl = readline.createInterface({
-    input: fs.createReadStream(SOURCE, { encoding: "utf8" }),
+    input: fs.createReadStream(filePath, { encoding: "utf8" }),
     crlfDelay: Infinity,
   });
 
   for await (const line of rl) {
     const tokens = sanitizeWords(line);
     if (tokens.length === 0) continue;
-    // Allow handler to be synchronous or async.
     await handler(tokens);
+  }
+};
+
+const iterateCsvFile = async (filePath, handler) => {
+  const rl = readline.createInterface({
+    input: fs.createReadStream(filePath, { encoding: "utf8" }),
+    crlfDelay: Infinity,
+  });
+
+  let header = null;
+  let questionIdx = -1;
+  let answerIdx = -1;
+  let buffer = "";
+
+  const processFields = async (fields) => {
+    if (!header) {
+      header = fields.map((f) => f.trim().toLowerCase());
+      questionIdx = header.indexOf("question");
+      answerIdx = header.indexOf("answer");
+      if (questionIdx === -1 || answerIdx === -1) {
+        throw new Error(
+          `CSV file "${filePath}" does not include "Question" and "Answer" columns`
+        );
+      }
+      return true;
+    }
+
+    const requiredIndex = Math.max(questionIdx, answerIdx);
+    if (fields.length <= requiredIndex) {
+      return false;
+    }
+
+    const question = fields[questionIdx]?.trim() ?? "";
+    const answer = fields[answerIdx]?.trim() ?? "";
+    const tokens = [...sanitizeWords(question), ...sanitizeWords(answer)];
+    if (tokens.length === 0) {
+      return true;
+    }
+    await handler(tokens);
+    return true;
+  };
+
+  for await (const rawLine of rl) {
+    const line = buffer ? `${buffer}\n${rawLine}` : rawLine;
+    const trimmed = line.trim();
+    if (!trimmed) {
+      buffer = "";
+      continue;
+    }
+
+    const quoteCount = (line.match(/"/g) ?? []).length;
+    if (quoteCount % 2 === 1) {
+      buffer = line;
+      continue;
+    }
+
+    const fields = parseCsvLine(line);
+    const processed = await processFields(fields);
+    buffer = processed ? "" : line;
+  }
+
+  if (buffer) {
+    const fields = parseCsvLine(buffer);
+    await processFields(fields);
+  }
+};
+
+const iterateCorpus = async (handler, sources) => {
+  const targets = sources ?? gatherCorpusEntries(SOURCE);
+  if (targets.length === 0) {
+    throw new Error(
+      `No supported files found in corpus source "${SOURCE}". Supported extensions: ${[
+        ...SUPPORTED_EXTENSIONS,
+      ].join(", ")}`
+    );
+  }
+
+  for (const source of targets) {
+    if (source.ext === ".txt") {
+      await iterateTextFile(source.path, handler);
+    } else if (source.ext === ".csv") {
+      await iterateCsvFile(source.path, handler);
+    }
   }
 };
 
@@ -93,9 +230,20 @@ const normalizeVector = (vec) => {
 };
 
 const main = async () => {
-  console.log(`Training word2vec on "${SOURCE}"`);
+  const corpusSources = gatherCorpusEntries(SOURCE);
+  if (corpusSources.length === 0) {
+    throw new Error(
+      `No supported files found in corpus source "${SOURCE}". Supported extensions: ${[
+        ...SUPPORTED_EXTENSIONS,
+      ].join(", ")}`
+    );
+  }
+  console.log(
+    `Training word2vec on "${SOURCE}" (${corpusSources.length} source files)`
+  );
 
   // Pass 1: build vocabulary with counts.
+  console.log("Building vocabulary...");
   const counts = new Map();
   let totalTokens = 0;
   await iterateCorpus((tokens) => {
@@ -103,7 +251,7 @@ const main = async () => {
       totalTokens++;
       counts.set(token, (counts.get(token) ?? 0) + 1);
     }
-  });
+  }, corpusSources);
   timer.log("Vocabulary collected");
 
   const vocabEntries = [];
@@ -121,14 +269,17 @@ const main = async () => {
 
   const vocabSize = vocabEntries.length;
   const wordToIndex = new Map();
+  timer.log("Building word-to-index map...");
   vocabEntries.forEach((entry, index) => {
     wordToIndex.set(entry.word, index);
   });
+  timer.log("word-to-index map built");
 
   const totalTrainTokens = vocabEntries.reduce(
     (sum, entry) => sum + entry.count,
     0
   );
+  timer.log(`Total training tokens: ${totalTrainTokens}`);
 
   // Subsampling probabilities (optional).
   const discardProb = new Float32Array(vocabSize);
@@ -139,6 +290,7 @@ const main = async () => {
       discardProb[i] = Math.min(1, prob);
     }
   }
+  timer.log("Subsampling probabilities built");
 
   // Negative sampling distribution.
   const cumulative = new Float64Array(vocabSize);
@@ -148,6 +300,7 @@ const main = async () => {
     cumulativeTotal += Math.pow(vocabEntries[i].count, power);
     cumulative[i] = cumulativeTotal;
   }
+  timer.log("Negative sampling distribution built");
 
   const sampleNegative = (centerIdx, positiveIdx) => {
     if (vocabSize <= 1) return -1;
@@ -163,6 +316,7 @@ const main = async () => {
   };
 
   const { input, output } = initializeEmbeddings(vocabSize, EMBED_DIM);
+  timer.log("Embeddings initialized");
 
   const totalSteps = totalTrainTokens * EPOCHS;
   let processedWords = 0;
@@ -226,7 +380,7 @@ const main = async () => {
         processedWords++;
         bar.tick();
       }
-    });
+    }, corpusSources);
 
     // timer.log(`Epoch ${epoch + 1} complete`);
   }
